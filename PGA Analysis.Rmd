@@ -1,0 +1,171 @@
+---
+title: "Assignment 1 Garzaniti Sports Analytics"
+author: "Josh Garzaniti"
+date: "2024-10-30"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+##Libraries
+
+```{r}
+library(ggplot2) 
+library(ggdark) 
+library(tidyr) 
+library(ggnewscale) 
+library(ggrepel) 
+library(Gini)
+library(dplyr)
+library(mice)
+```
+
+##Loading in data
+
+```{r pressure, echo=FALSE}
+PGA = read.csv("c:/Sports Analytics/pgaTourData.csv")
+```
+
+
+##Summary of the Data
+```{r}
+summary(PGA)
+
+head(PGA)
+
+colSums(is.na(PGA))
+```
+##Impute NA's
+```{r}
+PGA = PGA%>%
+  mutate(across(c(Wins, Top.10), ~ replace_na(.x, 0)))
+
+imputed_PGA = mice(PGA, m = 1, maxit = 50, method = 'pmm', seed = 719)
+
+PGA_imputed = complete(imputed_PGA)
+
+PGA_clean = PGA_imputed %>%
+  mutate(across(everything(), ~ ifelse(is.na(.x), 0, .x)))
+
+colSums(is.na(PGA_clean))
+```
+Just Used Mice here to clean up some of the NA's across the board for the PGA dat(mostly stroke gained variables).
+
+## Initial Visualizations
+```{r}
+Fairway_score = ggplot(data = PGA_clean, aes(x = Fairway.Percentage, y = Average.Score))+ 
+  geom_point(color = "maroon")+
+  theme_minimal()+
+  ggtitle(label = "2010-2018 PGA Scores", subtitle = "by Fairway Percentage")+
+  labs(x = "Fairway Percentage", y = "Round Score", color = "Player")+
+  geom_smooth()+
+  geom_text_repel(aes(label = Player.Name),
+                  size = 3, color = "black")+
+  theme(panel.grid.major = element_blank(),
+        panel.grid.minor = element_blank())
+
+Fairway_score
+```
+This is a basic scatter plot displaying what players on the tour have shot in terms of their overall average round score by how often they find the fairway on their tee shots. As you can imagine, those who are finding the fairway more often(really above 50%), tend to shoot par(implied 72) or better each round. There is some variance in scores suggesting that anything within the 55-70%+ range is beneficial, but not exponentially increasing the odds of scoring lower rounds.
+## Putts vs Score Visualization
+```{r}
+Putts_score = ggplot(data = PGA_clean, mapping = aes(x = Average.Putts, y = Average.Score))+ geom_point(color = "forestgreen")+
+  theme_minimal()+
+  ggtitle(label = "2010-2018 PGA Scores", subtitle = "by average amount of putts per round")+
+  labs(x = "Putts Taken", y = "Round Score", color = "Player")+
+  geom_smooth()+
+  geom_text_repel(aes(label = Player.Name),
+                  size = 3, color = "black")+
+  theme(panel.grid.major = element_blank(),
+        panel.grid.minor = element_blank())
+
+Putts_score
+```
+Another scatter plot, this time displaying the round score of PGA players by the average amount of putts they make in a given round. Interesting to note that between 2010 and 2018, short game specialists like Spieth were averaging less than 28 putts per round(When it's often considered average to 2-putt a hole, which leads to 36 regulation putt attempts). But also a very straightforward graphic. As your putting attempts increase, you're often lagging behind in the short game or having to make up strokes for poor play elsewhere, which lead to higher scores.
+##Greens in Regulation
+```{r}
+max(PGA_clean$Top.10)
+
+is.na(PGA$Top.10)
+
+PGA_clean%>%
+  mutate(Top10_bins = cut(Top.10, breaks = c(0, 5, 10, 15), 
+                          labels = c("0-5", "6-10", "11-15"), 
+                          right = FALSE))%>%  
+  ggplot(aes(x = Top10_bins, y = gir)) +
+  geom_boxplot(fill = "orange") +
+  theme_minimal() +
+  ggtitle("GIR by Top 10 Finish Range", subtitle = "2010-2018 PGA") +
+  labs(x = "Top 10 Finish Range", y = "GIR%")+
+  geom_text_repel(aes(label = Player.Name),
+                  size = 3, color = "black")+
+  theme(panel.grid.major = element_blank(),
+        panel.grid.minor = element_blank())
+```
+I created 3 main "top 10 tour finish bins" to have this bar chart display and then fitted them by the Greens in Regulation percentage or GIR for each tour player. What GIR tracks is how often a player is making it onto the green with at least 2 putts lefts for par. So for a par 3, it's when they make it on the green with their drive, for par 4's when they're on in 2 shots, and par 5's... 3 shots. It's the equivalent of "baseball players being on/ahead of the count for batting, or a nfl football team being ahead or on pace with the chains while they're on offense". There are some outliers in the data, but there is also a positive trend of binned players who have a better GIR%, also having more top 10 finishes. Consistency. Is. Key. 
+##Scrambling Analysis
+```{r}
+max(PGA_clean$Average.Scrambling)
+min(PGA_clean$Average.Scrambling)
+
+PGA_clean%>%
+  mutate(Top10_bins = cut(Top.10, breaks = c(0, 5, 10, 15), 
+                          labels = c("0-5", "6-10", "11-15"), 
+                          right = FALSE))%>%  
+  ggplot(aes(x = Top10_bins, y = Average.Scrambling)) +
+  geom_boxplot(fill = "aquamarine") +
+  theme_minimal() +
+  ggtitle("Scrambling Percentage by Top 10 Finish Range", subtitle = "2010-2018 PGA") +
+  labs(x = "Top 10 Finish Range", y = "Scrambling%")+
+  geom_text_repel(aes(label = Player.Name),
+                  size = 3, color = "black")+
+  theme(panel.grid.major = element_blank(),
+        panel.grid.minor = element_blank())
+```
+Here is another top 10 binned graphic which displays the three main finish player categories by scrambling percentage. Think of scrambling percentage as how often a golfer makes par or better when they miss the GIR. e.g. a golfer hits their par 3 drive and it lands in the rough away from the green but then chips in for birdie or completes a successful "up and down". It's the equivalent to being behind the sticks in football on offense, but still finding a way to convert on 3rd down/ 4th down even when early down success percentage is below average standards. Once again we're seeing players like Spieth and Dustin Johnson excel in terms of top 10 placements because of their adaptability when it comes to making up shots around the green.
+##Shots Gained Analysis
+```{r}
+TeeSG_score = ggplot(data = PGA_clean, mapping = aes(x = SG.OTT, y = Average.Score))+ geom_point(color = "orange")+
+  theme_minimal()+
+  ggtitle(label = "2010-2018 PGA Scores", subtitle = "by average shots gained off the tee")+
+  labs(x = "Shots Gained off the Tee", y = "Round Score", color = "Player")+
+  geom_smooth()+
+  geom_text_repel(aes(label = Player.Name),
+                  size = 3, color = "black")+
+  theme(panel.grid.major = element_blank(),
+        panel.grid.minor = element_blank())
+
+TeeSG_score
+
+ApproachSG_score = ggplot(data = PGA_clean, mapping = aes(x = SG.APR, y = Average.Score))+ geom_point(color = "orange")+
+  theme_minimal()+
+  ggtitle(label = "2010-2018 PGA Scores", subtitle = "by average shots gained on a player's approach")+
+  labs(x = "Shots Gained on Approach", y = "Round Score", color = "Player")+
+  geom_smooth()+
+  geom_text_repel(aes(label = Player.Name),
+                  size = 3, color = "black")+
+  theme(panel.grid.major = element_blank(),
+        panel.grid.minor = element_blank())
+
+ApproachSG_score
+
+AroundGreen_score = ggplot(data = PGA_clean, mapping = aes(x = SG.ARG, y = Average.Score))+ geom_point(color = "orange")+
+  theme_minimal()+
+  ggtitle(label = "2010-2018 PGA Scores", subtitle = "by average shots gained around the green")+
+  labs(x = "Shots Gained Around the Green", y = "Round Score", color = "Player")+
+  geom_smooth()+
+  geom_text_repel(aes(label = Player.Name),
+                  size = 3, color = "black")+
+  theme(panel.grid.major = element_blank(),
+        panel.grid.minor = element_blank())
+
+AroundGreen_score
+```
+These last few graphics are what I mainly want to hone in on moving forward with my analysis. What I want to do is take a look at each part of the game on a stroke by stroke base and see where PGA tour players are separating themselves from the pack. When it comes to driving Rory Mcllroy has been just about as good as it comes at finding the airway and getting the absolute most out of yardage from his tee shots. Meanwhile we're seeing Tiger Woods dominate 2010-2018 at not his first shots, but those follow up fairway and approach shots. Tiger is known for going off track with sub-par drives but then having this unique ability to hit ridiculous irons to either save par or have birdie opportunities. Shots Gained around the green doesn't has as drastic of an impact on score by player, but there's still that inverse correlation between SG and round score. What I want to do is introduce these topics and then break down the facets of the game looking preferably at more current data (there's a kaggle pga dataset 2015-2022:
+https://www.kaggle.com/datasets/robikscube/pga-tour-golf-data-20152022
+
+I'm still cleaning up a bit). The end goal is either using more advanced modeling and visualizations to break down PGA tour player analysis on these different shot levels or cater it to a unique golf course I.e Augusta National where the tournament takes place in the same location each year and then data analysis can be performed using these Shots Gained metrics to predict tournament performance. That data I would probably pull from getting a subscription using https://datagolf.com/historical-tournament-stats?event_id=14&year=2024. 
+
+
