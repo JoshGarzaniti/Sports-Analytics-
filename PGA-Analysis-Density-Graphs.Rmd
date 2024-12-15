@@ -1,0 +1,1401 @@
+---
+title: "Untitled"
+author: "Josh Garzaniti"
+date: "2024-12-02"
+output:
+  pdf_document: default
+  html_document: default
+---
+
+##Loading Packages
+```{r}
+library(tidyverse)
+library(dplyr)
+library(ggplot2)
+library(ggdark)
+library(zoo)
+library(ggimage)
+library(grid)
+library(png)
+library(caret)
+library(xgboost)
+library(ggrepel)
+```
+
+##Reading in Shot Link Data
+```{r}
+#Read in the TXT file
+PGA = read.delim("C:/Sports Analytics/StrokeLevelTOURChamp.txt")
+#Check the first 20 rows of data
+head(PGA, 20)
+#Check the overall Summary
+summary(PGA)
+#Check what the column/variable names are
+colnames(PGA)
+#Check and see if there are any NA's in the data
+colSums(is.na(PGA))
+#No NA's in the data which is amazing
+```
+##Renaming Columns
+```{r}
+#Going to use dyplyr to rename a few of these columns
+
+PGA = PGA%>%
+  rename("Tour_type" = tour_description, "Tournament_Number" = tourn_num,
+         "First_Name" = Player.First.Name, "Last_Name" = Player.Last.Name,
+         "Tournament_Name" = Tournament.Name, "Course" = Course.Name,
+         "Hole_Score" = Hole.Score, "Hole_Par" = Par.Value, "Nbr_of_strokes" =
+           X..of.Strokes, "Shot_Location_Start" = From.Location.Scorer., "Laser_Location_Start" = From.Location.Laser., "Shot_Location_End" = To.Location.Scorer.,
+         "Laser_Location_End" = To.Location.Laser., "Distance_to_Pin" = Distance.to.Pin,
+         "In_Hole" = In.the.Hole.Flag, "Around_Green" = Around.the.Green.Flag,
+         "Hole_Distance_After_Shot" = Distance.to.Hole.after.the.Shot, 
+         "Distance_From_Center" = Distance.from.Center, "Distance_From_Edge" = Distance.from.Edge)
+```
+## Data Cleaning
+```{r}
+#Combining Player First name and Last Name
+PGA = PGA%>%
+  mutate("Player_Name"= paste(First_Name, Last_Name, sep = " "))
+#Re-ordering the variables in the PGA dataframe
+PGA = PGA%>%
+  select(tour_code, Tour_type, year, Tournament_Number, Player.., Course.., Player_Name, 
+         Tournament_Name, Course, Round, Hole, Hole_Par, Hole_Score, Yardage, Shot, Shot.Type.S.P.D., Nbr_of_strokes, Shot_Location_Start, Shot_Location_End, Laser_Location_Start, Laser_Location_End, Distance, Distance_to_Pin, Distance_From_Center, Distance_From_Edge, In_Hole, Around_Green, X1st.Putt.Flag, Hole_Distance_After_Shot, Lie,
+         Elevation, Slope, X.Coordinate, Y.Coordinate, Z.Coordinate, Time)
+
+#Adding in Total Score for the Tournament
+TotalPGA = PGA%>% 
+  group_by(Player_Name,Round)%>% #Group strokes/shots by player name and round
+  summarize(shots = sum(Nbr_of_strokes), #total up the number of shots in each round by player
+  groups = "keep")%>% 
+  ungroup()%>% 
+  mutate(Round = paste0("Round_",Round))%>% #create vars for each round based on the round number
+  pivot_wider(names_from = Round,
+  values_from = shots)%>% #Pivot around those rounds and fill them with sum of shots by each round
+  as.data.frame()%>% 
+  mutate(Total_Score = Round_1 + Round_2 + Round_3 + Round_4)%>% #Create a final "Total Scores" column to add up all of the strokes/shots for each round to get a Tournament Total
+  arrange(Total_Score)%>% 
+  head(40) #Check out the first 20 and compare with historical records to verify accuracy
+```
+## Creating a "Par Made" Binary Outcome Column
+```{r}
+#Creating one of my first outcome variables called "Par_Made_Hole
+#For each unique player on each unique hole on each unique round, if 
+#the hole_score for that player is less than or equal to the par for
+#that hole, then give them a 1 for yes, if not 0 for no
+PGA = PGA%>%
+  group_by(Player_Name, Hole, Round)%>%
+  mutate(Par_Made_Hole = if_else(Hole_Score <= Hole_Par, 1, 0))%>%
+  ungroup()
+#Saving Dataset for Later 
+write.csv(PGA, "c:/Sports Analytics/PGA.csv")
+
+PGA = PGA%>%
+  rename("First_Putt_Flag" = X1st.Putt.Flag)
+```
+## Initial Mapping of Shots
+```{r}
+#Mapping points based on their Coordinates
+#First plotting the points as they originally were to see if it matters with the string replacement 
+courseshots = ggplot(PGA,mapping = aes(x = X.Coordinate,
+  y = Y.Coordinate)) +
+  geom_point()+
+  theme(panel.grid.major = element_blank(), 
+  panel.grid.minor = element_blank(),
+  panel.background = element_blank(), 
+  axis.line = element_line(colour = "black"))
+
+#The data in each coordinate variable contains commas so I probably need to remove them 
+PGA = PGA%>% 
+  mutate(x = str_replace_all(string = X.Coordinate,
+                             pattern = ",",
+                             replacement = "")) %>%
+  mutate(y = str_replace_all(string = Y.Coordinate,
+                             pattern = ",",
+                             replacement = "")) %>% 
+  mutate(z = str_replace_all(string = Z.Coordinate,
+                             pattern = ",",
+                             replacement = "")) %>% 
+  mutate(x = as.numeric(x),
+         y = as.numeric(y),
+         z = as.numeric(z))
+
+courseshots
+#The 2nd graph isa little more clear bu way zoomed out  
+courseshots2 = ggplot(PGA, mapping = aes(x = x, y = y))+
+  geom_point()+
+  theme(panel.grid.major = element_blank(), 
+  panel.grid.minor = element_blank(),
+  panel.background = element_blank(), 
+  axis.line = element_line(colour = "black"))
+
+courseshots2
+```
+#Taking care of all the accumulated points clustered at the very bottom of the graph
+#Another idea I was thinking about was just imputing them (talked about this in the proposal)
+```{r}
+#Filter out the x coordinates that are NA's
+PGA = PGA%>% 
+  mutate(X = str_replace_all(string = X.Coordinate,
+                             pattern = ",",
+                             replacement = ""))%>%
+  mutate(Y = str_replace_all(string = Y.Coordinate,
+                             pattern = ",",
+                             replacement = ""))%>% 
+  mutate(Z = str_replace_all(string = Z.Coordinate,
+                             pattern = ",",
+                             replacement = ""))%>% 
+  mutate(X = as.numeric(X),
+         Y = as.numeric(Y),
+         Z = as.numeric(Z))%>%
+  #If any of these shotlink coordinates == 0 make them NA's, if not keep them as is
+  #Note this might mess with final shots because the X coordinate of final shots is 0
+  mutate(X = ifelse(X == 0,NA,X),
+         Y = ifelse(Y == 0,NA,Y),
+         Z = ifelse(Z == 0,NA,Z))
+#Get rid of duplicate Coordinate columns   
+PGA = PGA%>%  
+  select(-X.Coordinate, -Y.Coordinate, -Z.Coordinate, -x, -y, -z)
+#Interpolate missing coordinates part
+PGA = PGA%>%
+  group_by(Player_Name, Round, Hole)%>%
+  mutate(
+    X = na.approx(X, rule = 2),  
+    Y = na.approx(Y, rule = 2),  
+    Z = na.approx(Z, rule = 2))%>%
+  ungroup()
+#Filter out all N/A values for X(Be sure to review this later)
+PGA = PGA%>% 
+  filter(!is.na(X))%>% 
+  mutate(Hole = factor(Hole, ordered = TRUE))
+#Changing Hole to a factor since each hole is different and they aren't technically pure numerical numbers  
+
+  
+course_shots_ordered = ggplot(PGA, mapping = aes(x = X, y = Y, color = factor(Hole))) +
+  geom_point()+
+  theme(
+    axis.text = element_blank(),
+    axis.ticks = element_blank(),
+    axis.title = element_blank(),
+    panel.background = element_blank())
+
+course_shots_ordered
+
+str(PGA)
+##Creating a Variable to determine how many Shots are left for each unique player on each unique hole over each unique round. 
+PGA = PGA%>%
+  group_by(Player_Name, Hole, Round)%>%
+  mutate(Shots_Left_Hole = max(Shot)-Shot)%>%
+  ungroup()
+##Mutating Lie NA values to Be Unknowns 
+PGA = PGA%>%
+  mutate(Lie = str_replace(as.character(Lie), pattern = "N/A", replacement = "Unknown"))
+##Creating modified data frame (We don't need course/tournament numbers and some other variables that might impact with our shot location analysis)
+PGA = PGA%>%
+  select(Tour_type, Tournament_Name, Player_Name, Course, Round, Hole, Hole_Par,            Hole_Score, Yardage, Shot, Shot.Type.S.P.D., Nbr_of_strokes, Shot_Location_Start, Shot_Location_End, Laser_Location_Start, Laser_Location_End, Distance, Distance_to_Pin, Distance_From_Center, Distance_From_Edge, In_Hole, Around_Green, First_Putt_Flag, Hole_Distance_After_Shot, Lie, Elevation, Slope, Time, X, Y, Z, Par_Made_Hole, Shots_Left_Hole)
+```
+
+## Working to Create a Shot Map based off of "Shots Remaining"
+```{r}
+#create a simple linear model to describe shots remaining
+PGA_Initial_model = lm(Shots_Left_Hole~X*Y*Z*factor(Hole),data = PGA)
+
+summary(PGA_Initial_model)
+
+```
+## Modeling Next Attempt
+```{r}
+library(mgcv)
+#Using a generalized Additive Model
+#S smooths out the data and "TP" accounts for multidimensions (X,Y,Z coordinate planes)
+PGA_GAM = gam(Shots_Left_Hole ~ s(X, Y, Z, bs = "tp"), data = PGA)
+
+summary(PGA_GAM)
+```
+
+```{r}
+library(randomForest)
+
+pga_model = PGA
+
+pga_model$Hole = as.factor(pga_model$Hole)
+
+PGA_rf = ranpga_modelPGA_GAM = randomForest(Shots_Left_Hole ~ X + Y + Z + Hole, data = pga_model[which(pga_model$Shots_Left_Hole != 0), ])
+
+PGA_rf
+#Checking the variable importance for the Random Forest Model
+varImpPlot(PGA_rf)
+#Finding the predicted shots remaining values and checking the RMSE
+rf_predictions = predict(PGA_rf, newdata = pga_model)
+
+actual = pga_model$Shots_Left_Hole
+#Finding the rmse of what impacts shots remaining
+rmse = sqrt(mean((actual - rf_predictions)^2, na.rm = TRUE))
+
+print(rmse)
+```
+
+
+## Create a grid to store these values in
+```{r}
+#Calculating level of detail within my golf course shot locations lengths to build a grid
+X_range = range(PGA$X)
+Y_range = range(PGA$Y)
+Z_range = range(PGA$Z)
+#Maxing out granularity of heat graph because there is a wide spread dispersion in X and Y values
+X_length = 200  
+Y_length = 200
+Z_length = 30 
+#Create a grid made up of the minimum and maximum values of each coordinate
+PGA_grid = expand.grid(X = seq(X_range[1], X_range[2], length.out = X_length),
+                    Y = seq(Y_range[1], Y_range[2], length.out = Y_length),
+                    Z = seq(Z_range[1], Z_range[2], length.out = Z_length),
+                    Hole = seq(1:18))
+#Taking the grid and filling it with predicted shot remaining values based on the distances
+#using our Generalized model 
+PGA_grid$Shots_Left_Hole = predict(PGA_rf, newdata = PGA_grid)
+```
+
+##Creating 2-D Density Grid
+```{r}
+#Creating grid for 2d Density map
+shots = rep(NA, nrow(PGA_grid))
+
+PGA_grid = PGA_grid[order(PGA_grid$Hole), ]
+for(i in 2:nrow(PGA_grid)){
+  if(PGA_grid$Hole[i] == PGA_grid$Hole[i-1]){
+      shots[i] = sum(PGA$X > PGA_grid$X[i-1] &
+                    PGA$X <= PGA_grid$X[i] &
+                    PGA$Y > PGA_grid$Y[i-1] &
+                    PGA$Y <= PGA_grid$Y[i] &
+                    PGA$Hole == PGA_grid$Hole[i]
+                  )
+  }
+
+}
+```
+
+# Breaking the Density Grid into a graph for each hole
+```{r}
+getwd()
+#We know each hole is unique, so this breaks them out as ordered factors
+unique_Holes = levels(PGA$Hole)
+
+#Creating a list to store all of the coordinate data for each unique hole
+PGA_Holes_density = list()
+
+#Creating a vector to store all of the grid data
+grids = vector(mode = "list", length = length(unique_Holes))
+
+
+#Loop over unique holes with index 'i...could also use holes/Holes'
+for (i in seq_along(unique_Holes)) {
+  hole = unique_Holes[i]
+  
+  #Filter for specific hole
+  PGA_Holes_data = pga_model %>% filter(Hole == hole)
+  
+  # Create a density plot of actual shot locations
+  Density_Hole_N = ggplot(PGA_Holes_data, aes(x = X, y = Y))+
+    stat_density_2d(
+      aes(fill = ..level.. ^ 2),  #Squaring density to enhance contrast 
+      geom = "polygon", 
+      alpha = 0.5)+
+    geom_point(color = "white", alpha = 0.3, size = 0.5) +  #Add actual shot markers
+    scale_fill_gradient(
+      low = "blue", high = "red", name = "Density Level (squared)")+
+    dark_theme_minimal()+
+    labs(
+      title = paste("2D Density of Shots for Hole", hole),
+      x = "X Coord", y = "Y Coord")
+  
+  ggsave(
+    filename = paste0("Density_Shots_Hole_", hole, ".jpeg"),
+    plot = Density_Hole_N,
+    width = 10, height = 10, dpi = 600)
+  
+  # Shots Remaining: Using a scatter plot for the actual shots
+  Shots_Remaining = ggplot(PGA_Holes_data, aes(x = X, y = Y))+
+    geom_point(aes(color = Shots_Left_Hole), alpha = 0.6, size = 0.8)+
+    scale_color_gradient(low = "blue", high = "red", name = "Shots Left")+
+    dark_theme_minimal()+
+    labs(
+      title = paste("Shots Remaining for Hole", hole),
+      x = "X Coord", y = "Y Coord")
+  
+  ggsave(
+    filename = paste0("Shots_Remaining_Hole_", hole, ".jpeg"),
+    plot = Shots_Remaining,
+    width = 10, height = 10, dpi = 600)
+}
+```
+
+##Checking Shots Remaining Values
+```{r}
+summary(PGA_Holes_grid$Shots_Left_Hole)
+
+unique(PGA$Shots_Left_Hole)
+
+```
+
+
+```{r}
+preds = predict(PGA_rf, pga_model)
+pga_model$preds = preds
+```
+
+```{r}
+pga_model$preds[which(pga_model$Shots_Left_Hole == 0)] = 0
+```
+
+```{r}
+gains <- rep(NA, nrow(pga_model))
+
+for(i in 1:nrow(pga_model)){
+  if(pga_model$Shot[i] == 1){
+    gains[i] = pga_model$Hole_Par[i] - pga_model$preds[i] - 1
+  } else if (pga_model$Player_Name[i] == pga_model$Player_Name[i-1] &
+            pga_model$Hole[i] == pga_model$Hole[i-1]){
+    gains[i] = pga_model$preds[i - 1] - pga_model$preds[i]  - 1
+  }
+}
+```
+
+```{r}
+pga_model$Strokes_Gained = gains
+```
+
+
+## Creating a Strokes Gained/Lost model
+```{r}
+##The formula we'll be trying to use looks like this:
+#Strokes Gained = (Expected Shots/Strokes before)-(Expected shots/strokes after)-1
+
+#For each unique Player+Round+Hole+Shot, create 3 new calculated variables:
+#Use our predictive model to determine the expected number of strokes prior to the shot each player is actually on (EXP B)
+#Then look at the expected shots remaining after whatever shot each player is on (EXP A)
+#Take the two and create strokes gained from our original formula (the -1 accounts for the additional current stroke taken since we're looking at it twice)
+PGAExp = PGA%>%
+  group_by(Player_Name, Hole, Round)%>%
+  mutate(
+    Exp_Strokes_B = predict(PGA_GAM, newdata = cur_data()),
+    Exp_Strokes_A = ifelse(row_number() == n(), 0, lead(Exp_Strokes_B, default = NA)),
+    Strokes_Gained = Exp_Strokes_B - Exp_Strokes_A - 1
+  ) %>%
+  ungroup()
+```
+
+## Shots Gained DataFrame
+```{r}
+unique(PGA$Shot_Location_Start)
+
+##Trying to both sum up total strokes gained by player as well as where they're gaining strokes on the golf course. I wanted to use the S.P.D column because it breaks entries down into whether they're approach shots, tee, shots, putting etc but all the values in that column and "S" so I'm trying to use the shot location start to do the same thing (Note: there are two unique values in shot location start Other and Unknown I might have to impute to work around this.) 
+Strokes_Gained_df = pga_model%>%
+  group_by(Player_Name, Round)%>%
+  summarize(
+    SG_Drive = sum(Strokes_Gained[Shot_Location_Start == "Tee Box"], na.rm = TRUE),
+    SG_Approach = sum(Strokes_Gained[Shot_Location_Start %in% c("Primary Rough", "Fairway", "Fairway Bunker", "Native Area", "Water", "Intermediate Rough")], na.rm = TRUE),
+    SG_Around_Green = sum(Strokes_Gained[Shot_Location_Start %in% c("Green Side Bunker", "Fringe")], na.rm = TRUE),
+    SG_Putt = sum(Strokes_Gained[Shot_Location_Start == "Green"], na.rm = TRUE),
+    Total_Strokes_Gained = (SG_Drive + SG_Approach +SG_Around_Green +SG_Putt))
+#Turning off scientific notation for Total Strokes Gained
+options(scipen = 999)
+#Add a total strokes gained column based on the sums of all of the SG's
+ Strokes_Gained_df$Total_Strokes_Gained = rowSums(Strokes_Gained_df[, c(3:6)])
+
+ 
+ write.csv(Strokes_Gained_df, "C:/Sports Analytics/Strokes_Gained_df.csv", row.names = FALSE)
+
+```
+
+##Doing some Analysis on the original Strokes Gained DF Who had the Best Round
+```{r}
+#Analyze how well players are doing by each round of the tournament in terms of SG
+Strokes_Gained_Round_Player = Strokes_Gained_df%>%
+  group_by(Round, Player_Name)%>%
+  arrange(Round, Total_Strokes_Gained)
+
+Strokes_Gained_Round_Player
+
+Strokes_Gained_Round_Player1  =  Strokes_Gained_Round_Player%>%
+  filter(Round == 1)
+
+Strokes_Gained_Round_Player2  =  Strokes_Gained_Round_Player%>%
+  filter(Round == 2)
+
+Strokes_Gained_Round_Player3  =  Strokes_Gained_Round_Player%>%
+  filter(Round == 3)
+
+Strokes_Gained_Round_Player4  =  Strokes_Gained_Round_Player%>%
+  filter(Round == 4)
+
+Strokes_Gained_Round_1 = ggplot(Strokes_Gained_Round_Player1, 
+  aes(x = Total_Strokes_Gained, 
+      y = Player_Name))+ 
+  geom_point(aes(color = Player_Name), size = 3)+  
+  geom_text_repel(
+    aes(x = Total_Strokes_Gained, y = Player_Name, label = Player_Name), 
+    size = 3, 
+    nudge_x = 0.1,  
+    direction = "y",  
+    segment.color = "grey50", 
+    segment.size = 0.5,
+    color = "white" 
+  ) +
+  dark_theme_minimal() +
+  theme(
+    panel.grid.major = element_blank(), 
+    panel.grid.minor = element_blank(), 
+    panel.border = element_blank(),
+    panel.background = element_blank(),
+    axis.text.x = element_text(angle = 45, hjust = 1)
+  ) +
+  labs(
+    title = "Strokes Gained for each Player 1st Round",
+    x = "Total Strokes Gained",
+    y = "Player Name",
+    color = "Player"
+  )
+
+Strokes_Gained_Round_1
+#Saving plot 1
+ggsave(
+  filename = "Strokes_Gained_Round_1.jpeg",  
+  plot = Strokes_Gained_Round_1,             
+  width = 10,                               
+  height = 8,                               
+  dpi = 300,                                 
+  units = "in")
+
+Strokes_Gained_Round_2 = ggplot(Strokes_Gained_Round_Player2, 
+  aes(x = Total_Strokes_Gained, 
+      y = Player_Name))+ 
+  geom_point(aes(color = Player_Name), size = 3)+  
+  geom_text_repel(
+    aes(x = Total_Strokes_Gained, y = Player_Name, label = Player_Name), 
+    size = 3, 
+    nudge_x = 0.1,  
+    direction = "y",  
+    segment.color = "grey50", 
+    segment.size = 0.5,
+    color = "white" 
+  ) +
+  dark_theme_minimal() +
+  theme(
+    panel.grid.major = element_blank(), 
+    panel.grid.minor = element_blank(), 
+    panel.border = element_blank(),
+    panel.background = element_blank(),
+    axis.text.x = element_text(angle = 45, hjust = 1)
+  ) +
+  labs(
+    title = "Strokes Gained for each Player 2nd Round",
+    x = "Total Strokes Gained",
+    y = "Player Name",
+    color = "Player"
+  )
+
+Strokes_Gained_Round_2
+#Saving plot 2
+ggsave(
+  filename = "Strokes_Gained_Round_2.jpeg",  
+  plot = Strokes_Gained_Round_2,             
+  width = 10,                               
+  height = 8,                               
+  dpi = 300,                                 
+  units = "in")
+
+Strokes_Gained_Round_3 = ggplot(Strokes_Gained_Round_Player3, 
+  aes(x = Total_Strokes_Gained, 
+      y = Player_Name))+ 
+  geom_point(aes(color = Player_Name), size = 3)+  
+  geom_text_repel(
+    aes(x = Total_Strokes_Gained, y = Player_Name, label = Player_Name), 
+    size = 3, 
+    nudge_x = 0.1,  
+    direction = "y",  
+    segment.color = "grey50", 
+    segment.size = 0.5,
+    color = "white" 
+  ) +
+  dark_theme_minimal() +
+  theme(
+    panel.grid.major = element_blank(), 
+    panel.grid.minor = element_blank(), 
+    panel.border = element_blank(),
+    panel.background = element_blank(),
+    axis.text.x = element_text(angle = 45, hjust = 1)
+  ) +
+  labs(
+    title = "Strokes Gained for each Player 3rd Round",
+    x = "Total Strokes Gained",
+    y = "Player Name",
+    color = "Player"
+  )
+
+Strokes_Gained_Round_3
+#Saving plot 3
+ggsave(
+  filename = "Strokes_Gained_Round_3.jpeg",  
+  plot = Strokes_Gained_Round_3,             
+  width = 10,                               
+  height = 8,                               
+  dpi = 300,                                 
+  units = "in")
+
+Strokes_Gained_Round_4 = ggplot(Strokes_Gained_Round_Player4, 
+  aes(x = Total_Strokes_Gained, 
+      y = Player_Name))+ 
+  geom_point(aes(color = Player_Name), size = 3)+  
+  geom_text_repel(
+    aes(x = Total_Strokes_Gained, y = Player_Name, label = Player_Name), 
+    size = 3, 
+    nudge_x = 0.1,  
+    direction = "y",  
+    segment.color = "grey50", 
+    segment.size = 0.5,
+    color = "white" 
+  ) +
+  dark_theme_minimal() +
+  theme(
+    panel.grid.major = element_blank(), 
+    panel.grid.minor = element_blank(), 
+    panel.border = element_blank(),
+    panel.background = element_blank(),
+    axis.text.x = element_text(angle = 45, hjust = 1)
+  ) +
+  labs(
+    title = "Strokes Gained for each Player 4th Round",
+    x = "Total Strokes Gained",
+    y = "Player Name",
+    color = "Player"
+  )
+
+Strokes_Gained_Round_4
+#Saving plot 4
+ggsave(
+  filename = "Strokes_Gained_Round_4.jpeg",  
+  plot = Strokes_Gained_Round_4,             
+  width = 10,                               
+  height = 8,                               
+  dpi = 300,                                 
+  units = "in")
+```
+
+##Creating a 2nd Df to look at Strokes gain not just on a round level but on a hole level
+```{r}
+#Group by playign level/area
+Strokes_Gained_Hole = pga_model%>%
+  group_by(Player_Name, Round, Hole)%>%
+  summarize(
+    SG_Drive = sum(Strokes_Gained[Shot_Location_Start == "Tee Box"], na.rm = TRUE),
+    SG_Approach = sum(Strokes_Gained[Shot_Location_Start %in% c("Primary Rough", "Fairway", "Fairway Bunker", "Native Area", "Water", "Intermediate Rough")], na.rm = TRUE),
+    SG_Around_Green = sum(Strokes_Gained[Shot_Location_Start %in% c("Green Side Bunker", "Fringe")], na.rm = TRUE),
+    SG_Putt = sum(Strokes_Gained[Shot_Location_Start == "Green"], na.rm = TRUE),
+    Total_Strokes_Gained = (SG_Drive + SG_Approach +SG_Around_Green +SG_Putt))
+#Turning off scientific notation for Total Strokes Gained
+options(scipen = 999)
+#Add a total strokes gained column based on the sums of all of the SG's
+ Strokes_Gained_Hole$Total_Strokes_Gained = rowSums(Strokes_Gained_Hole[, c(4:7)])
+
+
+
+
+write.csv(Strokes_Gained_Hole, "C:/Sports Analytics/Strokes_Gained_Hole.csv", row.names = FALSE)
+
+write.csv(PGAExp, "C:/Sports Analytics/PGAExp.csv", row.names = FALSE)
+```
+
+## Analysis on Strokes Gained_Hole
+```{r}
+#Analyzing who performed the most in terms of total strokes gained by hole
+Strokes_Gained_Hole_Player = Strokes_Gained_Hole%>%
+  group_by(Hole, Player_Name)%>%
+  arrange(Hole, Total_Strokes_Gained)
+
+Strokes_Gained_Hole_Player
+
+```
+
+
+##Continued Analysis on Hole Player
+```{r}
+#Ran this instead of a loop yes my mental health suffered, no I don't care because the loop was giving me outrageous numbers for Shots Gained 
+#The goal here is to show how players are in terms of SG for each hole throughout the tournament
+Strokes_Gained_Hole_Player = Strokes_Gained_Hole%>%
+  group_by(Hole, Player_Name)%>%
+  summarize(Total_Strokes_Gained = sum(Total_Strokes_Gained, na.rm = TRUE))%>%
+  arrange(Hole, desc(Total_Strokes_Gained))%>%
+  ungroup()
+
+
+Strokes_Gained_Hole_Player1  =  Strokes_Gained_Hole_Player%>%
+  filter(Hole == 1)
+
+Strokes_Gained_Hole_Player2  =  Strokes_Gained_Hole_Player%>%
+  filter(Hole == 2)
+
+Strokes_Gained_Hole_Player3  =  Strokes_Gained_Hole_Player%>%
+  filter(Hole == 3)
+
+Strokes_Gained_Hole_Player4  =  Strokes_Gained_Hole_Player%>%
+  filter(Hole == 4)
+
+Strokes_Gained_Hole_Player5  =  Strokes_Gained_Hole_Player%>%
+  filter(Hole == 5)
+
+Strokes_Gained_Hole_Player6  =  Strokes_Gained_Hole_Player%>%
+  filter(Hole == 6)
+
+Strokes_Gained_Hole_Player7  =  Strokes_Gained_Hole_Player%>%
+  filter(Hole == 7)
+
+Strokes_Gained_Hole_Player8  =  Strokes_Gained_Hole_Player%>%
+  filter(Hole == 8)
+
+Strokes_Gained_Hole_Player9  =  Strokes_Gained_Hole_Player%>%
+  filter(Hole == 9)
+
+Strokes_Gained_Hole_Player10  =  Strokes_Gained_Hole_Player%>%
+  filter(Hole == 10)
+
+Strokes_Gained_Hole_Player11  =  Strokes_Gained_Hole_Player%>%
+  filter(Hole == 11)
+
+Strokes_Gained_Hole_Player12 =  Strokes_Gained_Hole_Player%>%
+  filter(Hole == 12)
+
+Strokes_Gained_Hole_Player13  =  Strokes_Gained_Hole_Player%>%
+  filter(Hole == 13)
+
+Strokes_Gained_Hole_Player14  =  Strokes_Gained_Hole_Player%>%
+  filter(Hole == 14)
+
+Strokes_Gained_Hole_Player15  =  Strokes_Gained_Hole_Player%>%
+  filter(Hole == 15)
+
+Strokes_Gained_Hole_Player16  =  Strokes_Gained_Hole_Player%>%
+  filter(Hole == 16)
+
+Strokes_Gained_Hole_Player17  =  Strokes_Gained_Hole_Player%>%
+  filter(Hole == 17)
+
+Strokes_Gained_Hole_Player18  =  Strokes_Gained_Hole_Player%>%
+  filter(Hole == 18)
+
+Strokes_Gained_Hole_1 = ggplot(Strokes_Gained_Hole_Player1, 
+  aes(x = Total_Strokes_Gained, 
+      y = Player_Name))+ 
+  geom_point(aes(color = Player_Name), size = 3)+  
+  geom_text_repel(
+    aes(x = Total_Strokes_Gained, y = Player_Name, label = Player_Name), 
+    size = 3, 
+    nudge_x = 0.1,  
+    direction = "y",  
+    segment.color = "grey50", 
+    segment.size = 0.5,
+    color = "white" 
+  ) +
+  dark_theme_minimal() +
+  theme(
+    panel.grid.major = element_blank(), 
+    panel.grid.minor = element_blank(), 
+    panel.border = element_blank(),
+    panel.background = element_blank(),
+    axis.text.x = element_text(angle = 45, hjust = 1)
+  ) +
+  labs(
+    title = "Strokes Gained for each Player on Hole 1",
+    x = "Total Strokes Gained",
+    y = "Player Name",
+    color = "Player"
+  )
+
+Strokes_Gained_Hole_1
+#Saving plot 1
+ggsave(
+  filename = "Strokes_Gained_Hole_1.jpeg",  
+  plot = Strokes_Gained_Hole_1,             
+  width = 10,                               
+  height = 8,                               
+  dpi = 300,                                 
+  units = "in")
+
+Strokes_Gained_Hole_2 = ggplot(Strokes_Gained_Hole_Player2, 
+  aes(x = Total_Strokes_Gained, 
+      y = Player_Name))+ 
+  geom_point(aes(color = Player_Name), size = 3)+  
+  geom_text_repel(
+    aes(x = Total_Strokes_Gained, y = Player_Name, label = Player_Name), 
+    size = 3, 
+    nudge_x = 0.1,  
+    direction = "y",  
+    segment.color = "grey50", 
+    segment.size = 0.5,
+    color = "white") +
+  dark_theme_minimal() +
+  theme(
+    panel.grid.major = element_blank(), 
+    panel.grid.minor = element_blank(), 
+    panel.border = element_blank(),
+    panel.background = element_blank(),
+    axis.text.x = element_text(angle = 45, hjust = 1))+
+  labs(
+    title = "Strokes Gained for each Player on Hole 2",
+    x = "Total Strokes Gained",
+    y = "Player Name",
+    color = "Player")
+#Saving plot 2
+ggsave(
+  filename = "Strokes_Gained_Hole_2.jpeg",  
+  plot = Strokes_Gained_Hole_2,             
+  width = 10,                               
+  height = 8,                               
+  dpi = 300,                                 
+  units = "in")
+
+Strokes_Gained_Hole_2
+
+Strokes_Gained_Hole_3 = ggplot(Strokes_Gained_Hole_Player3, 
+  aes(x = Total_Strokes_Gained, 
+      y = Player_Name))+ 
+  geom_point(aes(color = Player_Name), size = 3)+  
+  geom_text_repel(
+    aes(x = Total_Strokes_Gained, y = Player_Name, label = Player_Name), 
+    size = 3, 
+    nudge_x = 0.1,  
+    direction = "y",  
+    segment.color = "grey50", 
+    segment.size = 0.5,
+    color = "white")+
+  dark_theme_minimal()+
+  theme(
+    panel.grid.major = element_blank(), 
+    panel.grid.minor = element_blank(), 
+    panel.border = element_blank(),
+    panel.background = element_blank(),
+    axis.text.x = element_text(angle = 45, hjust = 1))+
+  labs(
+    title = "Strokes Gained for each Player on Hole 3",
+    x = "Total Strokes Gained",
+    y = "Player Name",
+    color = "Player")
+
+Strokes_Gained_Hole_3
+#Saving plot 3
+ggsave(
+  filename = "Strokes_Gained_Hole_3.jpeg",  
+  plot = Strokes_Gained_Hole_3,             
+  width = 10,                               
+  height = 8,                               
+  dpi = 300,                                 
+  units = "in")
+
+Strokes_Gained_Hole_4 = ggplot(Strokes_Gained_Hole_Player4, 
+  aes(x = Total_Strokes_Gained, 
+      y = Player_Name))+ 
+  geom_point(aes(color = Player_Name), size = 3)+  
+  geom_text_repel(
+    aes(x = Total_Strokes_Gained, y = Player_Name, label = Player_Name), 
+    size = 3, 
+    nudge_x = 0.1,  
+    direction = "y",  
+    segment.color = "grey50", 
+    segment.size = 0.5,
+    color = "white")+
+  dark_theme_minimal()+
+  theme(
+    panel.grid.major = element_blank(), 
+    panel.grid.minor = element_blank(), 
+    panel.border = element_blank(),
+    panel.background = element_blank(),
+    axis.text.x = element_text(angle = 45, hjust = 1))+
+  labs(
+    title = "Strokes Gained for each Player on Hole 4",
+    x = "Total Strokes Gained",
+    y = "Player Name",
+    color = "Player")
+
+Strokes_Gained_Hole_4
+#Saving plot 4
+ggsave(
+  filename = "Strokes_Gained_Hole_4.jpeg",  
+  plot = Strokes_Gained_Hole_4,             
+  width = 10,                               
+  height = 8,                               
+  dpi = 300,                                 
+  units = "in")
+
+Strokes_Gained_Hole_5 = ggplot(Strokes_Gained_Hole_Player5, 
+  aes(x = Total_Strokes_Gained, 
+      y = Player_Name))+ 
+  geom_point(aes(color = Player_Name), size = 3)+  
+  geom_text_repel(
+    aes(x = Total_Strokes_Gained, y = Player_Name, label = Player_Name), 
+    size = 3, 
+    nudge_x = 0.1,  
+    direction = "y",  
+    segment.color = "grey50", 
+    segment.size = 0.5,
+    color = "white")+
+  dark_theme_minimal()+
+  theme(
+    panel.grid.major = element_blank(), 
+    panel.grid.minor = element_blank(), 
+    panel.border = element_blank(),
+    panel.background = element_blank(),
+    axis.text.x = element_text(angle = 45, hjust = 1))+
+  labs(
+    title = "Strokes Gained for each Player on Hole 5",
+    x = "Total Strokes Gained",
+    y = "Player Name",
+    color = "Player")
+
+Strokes_Gained_Hole_5
+#Saving plot 5
+ggsave(
+  filename = "Strokes_Gained_Hole_5.jpeg",  
+  plot = Strokes_Gained_Hole_5,             
+  width = 10,                               
+  height = 8,                               
+  dpi = 300,                                 
+  units = "in")
+
+Strokes_Gained_Hole_6 = ggplot(Strokes_Gained_Hole_Player6, 
+  aes(x = Total_Strokes_Gained, 
+      y = Player_Name))+ 
+  geom_point(aes(color = Player_Name), size = 3)+  
+  geom_text_repel(
+    aes(x = Total_Strokes_Gained, y = Player_Name, label = Player_Name), 
+    size = 3, 
+    nudge_x = 0.1,  
+    direction = "y",  
+    segment.color = "grey50", 
+    segment.size = 0.5,
+    color = "white")+
+  dark_theme_minimal()+
+  theme(
+    panel.grid.major = element_blank(), 
+    panel.grid.minor = element_blank(), 
+    panel.border = element_blank(),
+    panel.background = element_blank(),
+    axis.text.x = element_text(angle = 45, hjust = 1))+
+  labs(
+    title = "Strokes Gained for each Player on Hole 6",
+    x = "Total Strokes Gained",
+    y = "Player Name",
+    color = "Player")
+
+Strokes_Gained_Hole_6
+#Saving plot 6
+ggsave(
+  filename = "Strokes_Gained_Hole_6.jpeg",  
+  plot = Strokes_Gained_Hole_6,             
+  width = 10,                               
+  height = 8,                               
+  dpi = 300,                                 
+  units = "in")
+
+Strokes_Gained_Hole_7 = ggplot(Strokes_Gained_Hole_Player7, 
+  aes(x = Total_Strokes_Gained, 
+      y = Player_Name))+ 
+  geom_point(aes(color = Player_Name), size = 3)+  
+  geom_text_repel(
+    aes(x = Total_Strokes_Gained, y = Player_Name, label = Player_Name), 
+    size = 3, 
+    nudge_x = 0.1,  
+    direction = "y",  
+    segment.color = "grey50", 
+    segment.size = 0.5,
+    color = "white")+
+  dark_theme_minimal()+
+  theme(
+    panel.grid.major = element_blank(), 
+    panel.grid.minor = element_blank(), 
+    panel.border = element_blank(),
+    panel.background = element_blank(),
+    axis.text.x = element_text(angle = 45, hjust = 1))+
+  labs(
+    title = "Strokes Gained for each Player on Hole 7",
+    x = "Total Strokes Gained",
+    y = "Player Name",
+    color = "Player")
+
+Strokes_Gained_Hole_7
+#Saving plot 7
+ggsave(
+  filename = "Strokes_Gained_Hole_7.jpeg",  
+  plot = Strokes_Gained_Hole_7,             
+  width = 10,                               
+  height = 8,                               
+  dpi = 300,                                 
+  units = "in")
+
+Strokes_Gained_Hole_8 = ggplot(Strokes_Gained_Hole_Player8, 
+  aes(x = Total_Strokes_Gained, 
+      y = Player_Name))+ 
+  geom_point(aes(color = Player_Name), size = 3)+  
+  geom_text_repel(
+    aes(x = Total_Strokes_Gained, y = Player_Name, label = Player_Name), 
+    size = 3, 
+    nudge_x = 0.1,  
+    direction = "y",  
+    segment.color = "grey50", 
+    segment.size = 0.5,
+    color = "white")+
+  dark_theme_minimal()+
+  theme(
+    panel.grid.major = element_blank(), 
+    panel.grid.minor = element_blank(), 
+    panel.border = element_blank(),
+    panel.background = element_blank(),
+    axis.text.x = element_text(angle = 45, hjust = 1))+
+  labs(
+    title = "Strokes Gained for each Player on Hole 8",
+    x = "Total Strokes Gained",
+    y = "Player Name",
+    color = "Player")
+
+Strokes_Gained_Hole_8
+#saving plot 8
+ggsave(
+  filename = "Strokes_Gained_Hole_8.jpeg",  
+  plot = Strokes_Gained_Hole_8,             
+  width = 10,                               
+  height = 8,                               
+  dpi = 300,                                 
+  units = "in")
+
+Strokes_Gained_Hole_9 = ggplot(Strokes_Gained_Hole_Player9, 
+  aes(x = Total_Strokes_Gained, 
+      y = Player_Name))+ 
+  geom_point(aes(color = Player_Name), size = 3)+  
+  geom_text_repel(
+    aes(x = Total_Strokes_Gained, y = Player_Name, label = Player_Name), 
+    size = 3, 
+    nudge_x = 0.1,  
+    direction = "y",  
+    segment.color = "grey50", 
+    segment.size = 0.5,
+    color = "white")+
+  dark_theme_minimal()+
+  theme(
+    panel.grid.major = element_blank(), 
+    panel.grid.minor = element_blank(), 
+    panel.border = element_blank(),
+    panel.background = element_blank(),
+    axis.text.x = element_text(angle = 45, hjust = 1))+
+  labs(
+    title = "Strokes Gained for each Player on Hole 9",
+    x = "Total Strokes Gained",
+    y = "Player Name",
+    color = "Player")
+
+Strokes_Gained_Hole_9
+#saving plot 9
+ggsave(
+  filename = "Strokes_Gained_Hole_9.jpeg",  
+  plot = Strokes_Gained_Hole_9,             
+  width = 10,                               
+  height = 8,                               
+  dpi = 300,                                 
+  units = "in")
+
+Strokes_Gained_Hole_10 = ggplot(Strokes_Gained_Hole_Player10, 
+  aes(x = Total_Strokes_Gained, 
+      y = Player_Name))+ 
+  geom_point(aes(color = Player_Name), size = 3)+  
+  geom_text_repel(
+    aes(x = Total_Strokes_Gained, y = Player_Name, label = Player_Name), 
+    size = 3, 
+    nudge_x = 0.1,  
+    direction = "y",  
+    segment.color = "grey50", 
+    segment.size = 0.5,
+    color = "white")+
+  dark_theme_minimal()+
+  theme(
+    panel.grid.major = element_blank(), 
+    panel.grid.minor = element_blank(), 
+    panel.border = element_blank(),
+    panel.background = element_blank(),
+    axis.text.x = element_text(angle = 45, hjust = 1))+
+  labs(
+    title = "Strokes Gained for each Player on Hole 10",
+    x = "Total Strokes Gained",
+    y = "Player Name",
+    color = "Player")
+
+Strokes_Gained_Hole_10
+#saving plot 10
+ggsave(
+  filename = "Strokes_Gained_Hole_10.jpeg",  
+  plot = Strokes_Gained_Hole_10,             
+  width = 10,                               
+  height = 8,                               
+  dpi = 300,                                 
+  units = "in")
+
+Strokes_Gained_Hole_11 = ggplot(Strokes_Gained_Hole_Player11, 
+  aes(x = Total_Strokes_Gained, 
+      y = Player_Name))+ 
+  geom_point(aes(color = Player_Name), size = 3)+  
+  geom_text_repel(
+    aes(x = Total_Strokes_Gained, y = Player_Name, label = Player_Name), 
+    size = 3, 
+    nudge_x = 0.1,  
+    direction = "y",  
+    segment.color = "grey50", 
+    segment.size = 0.5,
+    color = "white")+
+  dark_theme_minimal()+
+  theme(
+    panel.grid.major = element_blank(), 
+    panel.grid.minor = element_blank(), 
+    panel.border = element_blank(),
+    panel.background = element_blank(),
+    axis.text.x = element_text(angle = 45, hjust = 1))+
+  labs(
+    title = "Strokes Gained for each Player on Hole 11",
+    x = "Total Strokes Gained",
+    y = "Player Name",
+    color = "Player")
+
+Strokes_Gained_Hole_11
+#saving plot 11
+ggsave(
+  filename = "Strokes_Gained_Hole_11.jpeg",  
+  plot = Strokes_Gained_Hole_11,             
+  width = 10,                               
+  height = 8,                               
+  dpi = 300,                                 
+  units = "in")
+
+Strokes_Gained_Hole_12 = ggplot(Strokes_Gained_Hole_Player12, 
+  aes(x = Total_Strokes_Gained, 
+      y = Player_Name))+ 
+  geom_point(aes(color = Player_Name), size = 3)+  
+  geom_text_repel(
+    aes(x = Total_Strokes_Gained, y = Player_Name, label = Player_Name), 
+    size = 3, 
+    nudge_x = 0.1,  
+    direction = "y",  
+    segment.color = "grey50", 
+    segment.size = 0.5,
+    color = "white")+
+  dark_theme_minimal()+
+  theme(
+    panel.grid.major = element_blank(), 
+    panel.grid.minor = element_blank(), 
+    panel.border = element_blank(),
+    panel.background = element_blank(),
+    axis.text.x = element_text(angle = 45, hjust = 1))+
+  labs(
+    title = "Strokes Gained for each Player on Hole 12",
+    x = "Total Strokes Gained",
+    y = "Player Name",
+    color = "Player")
+
+Strokes_Gained_Hole_12
+#saving plot 12
+ggsave(
+  filename = "Strokes_Gained_Hole_12.jpeg",  
+  plot = Strokes_Gained_Hole_12,             
+  width = 10,                               
+  height = 8,                               
+  dpi = 300,                                 
+  units = "in")
+
+Strokes_Gained_Hole_13 = ggplot(Strokes_Gained_Hole_Player13, 
+  aes(x = Total_Strokes_Gained, 
+      y = Player_Name))+ 
+  geom_point(aes(color = Player_Name), size = 3)+  
+  geom_text_repel(
+    aes(x = Total_Strokes_Gained, y = Player_Name, label = Player_Name), 
+    size = 3, 
+    nudge_x = 0.1,  
+    direction = "y",  
+    segment.color = "grey50", 
+    segment.size = 0.5,
+    color = "white")+
+  dark_theme_minimal() +
+  theme(
+    panel.grid.major = element_blank(), 
+    panel.grid.minor = element_blank(), 
+    panel.border = element_blank(),
+    panel.background = element_blank(),
+    axis.text.x = element_text(angle = 45, hjust = 1))+
+  labs(
+    title = "Strokes Gained for each Player on Hole 13",
+    x = "Total Strokes Gained",
+    y = "Player Name",
+    color = "Player")
+
+Strokes_Gained_Hole_13
+#saving plot 13
+ggsave(
+  filename = "Strokes_Gained_Hole_13.jpeg",  
+  plot = Strokes_Gained_Hole_13,             
+  width = 10,                               
+  height = 8,                               
+  dpi = 300,                                 
+  units = "in")
+
+Strokes_Gained_Hole_14 = ggplot(Strokes_Gained_Hole_Player14, 
+  aes(x = Total_Strokes_Gained, 
+      y = Player_Name))+ 
+  geom_point(aes(color = Player_Name), size = 3)+  
+  geom_text_repel(
+    aes(x = Total_Strokes_Gained, y = Player_Name, label = Player_Name), 
+    size = 3, 
+    nudge_x = 0.1,  
+    direction = "y",  
+    segment.color = "grey50", 
+    segment.size = 0.5,
+    color = "white")+
+  dark_theme_minimal() +
+  theme(
+    panel.grid.major = element_blank(), 
+    panel.grid.minor = element_blank(), 
+    panel.border = element_blank(),
+    panel.background = element_blank(),
+    axis.text.x = element_text(angle = 45, hjust = 1))+
+  labs(
+    title = "Strokes Gained for each Player on Hole 14",
+    x = "Total Strokes Gained",
+    y = "Player Name",
+    color = "Player")
+
+Strokes_Gained_Hole_14
+#saving plot 14
+ggsave(
+  filename = "Strokes_Gained_Hole_14.jpeg",  
+  plot = Strokes_Gained_Hole_14,             
+  width = 10,                               
+  height = 8,                               
+  dpi = 300,                                 
+  units = "in")
+
+Strokes_Gained_Hole_15 = ggplot(Strokes_Gained_Hole_Player15, 
+  aes(x = Total_Strokes_Gained, 
+      y = Player_Name))+ 
+  geom_point(aes(color = Player_Name), size = 3)+  
+  geom_text_repel(
+    aes(x = Total_Strokes_Gained, y = Player_Name, label = Player_Name), 
+    size = 3, 
+    nudge_x = 0.1,  
+    direction = "y",  
+    segment.color = "grey50", 
+    segment.size = 0.5,
+    color = "white")+
+  dark_theme_minimal()+
+  theme(
+    panel.grid.major = element_blank(), 
+    panel.grid.minor = element_blank(), 
+    panel.border = element_blank(),
+    panel.background = element_blank(),
+    axis.text.x = element_text(angle = 45, hjust = 1))+
+  labs(
+    title = "Strokes Gained for each Player on Hole 15",
+    x = "Total Strokes Gained",
+    y = "Player Name",
+    color = "Player")
+
+Strokes_Gained_Hole_15
+#saving plot 15
+ggsave(
+  filename = "Strokes_Gained_Hole_15.jpeg",  
+  plot = Strokes_Gained_Hole_15,             
+  width = 10,                               
+  height = 8,                               
+  dpi = 300,                                 
+  units = "in")
+
+Strokes_Gained_Hole_16 = ggplot(Strokes_Gained_Hole_Player16, 
+  aes(x = Total_Strokes_Gained, 
+      y = Player_Name))+ 
+  geom_point(aes(color = Player_Name), size = 3)+  
+  geom_text_repel(
+    aes(x = Total_Strokes_Gained, y = Player_Name, label = Player_Name), 
+    size = 3, 
+    nudge_x = 0.1,  
+    direction = "y",  
+    segment.color = "grey50", 
+    segment.size = 0.5,
+    color = "white")+
+  dark_theme_minimal()+
+  theme(
+    panel.grid.major = element_blank(), 
+    panel.grid.minor = element_blank(), 
+    panel.border = element_blank(),
+    panel.background = element_blank(),
+    axis.text.x = element_text(angle = 45, hjust = 1))+
+  labs(
+    title = "Strokes Gained for each Player on Hole 16",
+    x = "Total Strokes Gained",
+    y = "Player Name",
+    color = "Player")
+
+Strokes_Gained_Hole_16
+#saving plot 16
+ggsave(
+  filename = "Strokes_Gained_Hole_16.jpeg",  
+  plot = Strokes_Gained_Hole_16,             
+  width = 10,                               
+  height = 8,                               
+  dpi = 300,                                 
+  units = "in")
+
+Strokes_Gained_Hole_17 = ggplot(Strokes_Gained_Hole_Player17, 
+  aes(x = Total_Strokes_Gained, 
+      y = Player_Name))+ 
+  geom_point(aes(color = Player_Name), size = 3)+  
+  geom_text_repel(
+    aes(x = Total_Strokes_Gained, y = Player_Name, label = Player_Name), 
+    size = 3, 
+    nudge_x = 0.1,  
+    direction = "y",  
+    segment.color = "grey50", 
+    segment.size = 0.5,
+    color = "white")+
+  dark_theme_minimal()+
+  theme(
+    panel.grid.major = element_blank(), 
+    panel.grid.minor = element_blank(), 
+    panel.border = element_blank(),
+    panel.background = element_blank(),
+    axis.text.x = element_text(angle = 45, hjust = 1))+
+  labs(
+    title = "Strokes Gained for each Player on Hole 17",
+    x = "Total Strokes Gained",
+    y = "Player Name",
+    color = "Player")
+
+Strokes_Gained_Hole_17
+#saving plot 17
+ggsave(
+  filename = "Strokes_Gained_Hole_17.jpeg",  
+  plot = Strokes_Gained_Hole_17,             
+  width = 10,                               
+  height = 8,                               
+  dpi = 300,                                 
+  units = "in")
+
+Strokes_Gained_Hole_18 = ggplot(Strokes_Gained_Hole_Player18, 
+  aes(x = Total_Strokes_Gained, 
+      y = Player_Name))+ 
+  geom_point(aes(color = Player_Name), size = 3)+  
+  geom_text_repel(
+    aes(x = Total_Strokes_Gained, y = Player_Name, label = Player_Name), 
+    size = 3, 
+    nudge_x = 0.1,  
+    direction = "y",  
+    segment.color = "grey50", 
+    segment.size = 0.5,
+    color = "white")+
+  dark_theme_minimal()+
+  theme(
+    panel.grid.major = element_blank(), 
+    panel.grid.minor = element_blank(), 
+    panel.border = element_blank(),
+    panel.background = element_blank(),
+    axis.text.x = element_text(angle = 45, hjust = 1))+
+  labs(
+    title = "Strokes Gained for each Player on Hole 18",
+    x = "Total Strokes Gained",
+    y = "Player Name",
+    color = "Player")
+
+Strokes_Gained_Hole_18
+#saving plot 18
+ggsave(
+  filename = "Strokes_Gained_Hole_18.jpeg",  
+  plot = Strokes_Gained_Hole_18,             
+  width = 10,                               
+  height = 8,                               
+  dpi = 300,                                 
+  units = "in")
+```
+
+
+#Doing Analysis on the Strokes Gained Dataframe
+```{r}
+Strokes_Gained_df
+
+SG_rf = randomForest(Strokes_Gained_df$Total_Strokes_Gained ~ 
+                       SG_Drive+ 
+                       SG_Approach+ 
+                       SG_Around_Green+
+                       SG_Putt+
+                       Round, 
+                     data = Strokes_Gained_df)
+
+SG_rf
+#Variable analysis for Random Forest Shots Gained Model
+varImpPlot(SG_rf)
+```
+#Tuning for Mtry
+```{r}
+tuned_mtry = tuneRF(
+  x = Strokes_Gained_df[, c("SG_Drive", "SG_Approach", "SG_Around_Green", "SG_Putt", "Round")],
+  y = Strokes_Gained_df$Total_Strokes_Gained,
+  ntreeTry = 500,         
+  stepFactor = 1.5,       
+  improve = 0.01,         
+  trace = TRUE,           
+  plot = TRUE)
+
+#Use the optimal number of mtry back in the rf model
+optimal_mtry = tuned_mtry[which.min(tuned_mtry[, 2]), "mtry"]
+SG_rf = randomForest(
+  Total_Strokes_Gained ~ SG_Drive + SG_Approach + SG_Around_Green + SG_Putt + Round,
+  data = Strokes_Gained_df,
+  mtry = optimal_mtry,
+  ntree = 500)
+
+SG_rf
+```
+#Attempting an XGBoost model for SG by Round
+```{r}
+#Creating Data partitions for test and train subsets
+set.seed(303) 
+train_index = createDataPartition(Strokes_Gained_df$Total_Strokes_Gained, p = 0.8, list = FALSE)
+
+train_data = Strokes_Gained_df[train_index, ]
+test_data = Strokes_Gained_df[-train_index, ]
+
+dtrain = xgb.DMatrix(data = as.matrix(train_data[, 2:7]), label = as.numeric(train_data$Total_Strokes_Gained) - 1)
+dtest = xgb.DMatrix(data = as.matrix(test_data[, 2:7]), label = as.numeric(test_data$Total_Strokes_Gained) - 1)
+#Make a list of parameters to potentially use going forward to tune the model
+params = list(
+  objective = "reg:squarederror",  
+  eta = 0.1,                      
+  max_depth = 6,                   
+  subsample = 0.8,                 
+  colsample_bytree = 0.8)
+
+#Final Boost Model
+SG_Boost_Train = xgb.train(
+  params = params,
+  data = dtrain,
+  nrounds = 100,                  
+  watchlist = list(train = dtrain, test = dtest),  
+  verbose = 1)
+#Predict trained model on test data
+SG_predictions = predict(SG_Boost_Train, dtest)
+
+#Find the rmse of the model
+rmse = sqrt(mean((SG_predictions - test_data$Total_Strokes_Gained)^2))
+
+cat("RMSE on test data: ", rmse)
+#Give the first 25 total SG predictions 
+head(SG_predictions, 25)
+```
+#Plotting XGBoost Model
+```{r}
+#GRaph out how well we are accurately predicting Strokes Gained
+plot(test_data$Total_Strokes_Gained, SG_predictions, 
+     main = "Real Total Strokes Gained vs Predicted Total Strokes Gained",
+     xlab = "Real SG", ylab = "Predicted SG",
+     pch = 19, col = "blue")
+abline(0, 1, col = "red")
+```

@@ -1,0 +1,415 @@
+---
+title: "Sports Analytics Final ShotLink Analysis"
+author: "Josh Garzaniti"
+date: "2024-11-13"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+##Loading Packages
+```{r}
+library(tidyverse)
+library(dplyr)
+library(ggplot2)
+library(ggdark)
+library(zoo)
+```
+
+##Reading in Shot Link Data
+```{r}
+#Read in the TXT file
+PGA = read.delim("c:/Sports Analytics/StrokeLevelTOURChamp.txt")
+#Check the first 20 rows of data
+head(PGA, 20)
+#Check the overall Summary
+summary(PGA)
+#Check what the column/variable names are
+colnames(PGA)
+#Check and see if there are any NA's in the data
+colSums(is.na(PGA))
+#No NA's in the data which is amazing
+```
+##Renaming Columns
+```{r}
+#Going to use dyplyr to rename a few of these columns
+
+PGA = PGA%>%
+  rename("Tour_type" = tour_description, "Tournament_Number" = tourn_num,
+         "First_Name" = Player.First.Name, "Last_Name" = Player.Last.Name,
+         "Tournament_Name" = Tournament.Name, "Course" = Course.Name,
+         "Hole_Score" = Hole.Score, "Hole_Par" = Par.Value, "Nbr_of_strokes" =
+           X..of.Strokes, "Shot_Location_Start" = From.Location.Scorer., "Laser_Location_Start" = From.Location.Laser., "Shot_Location_End" = To.Location.Scorer.,
+         "Laser_Location_End" = To.Location.Laser., "Distance_to_Pin" = Distance.to.Pin,
+         "In_Hole" = In.the.Hole.Flag, "Around_Green" = Around.the.Green.Flag,
+         "Hole_Distance_After_Shot" = Distance.to.Hole.after.the.Shot, 
+         "Distance_From_Center" = Distance.from.Center, "Distance_From_Edge" = Distance.from.Edge)
+```
+## Data Cleaning
+```{r}
+#Combining Player First name and Last Name
+PGA = PGA%>%
+  mutate("Player_Name"= paste(First_Name, Last_Name, sep = " "))
+#Re-ordering the variables in the PGA dataframe
+PGA = PGA%>%
+  select(tour_code, Tour_type, year, Tournament_Number, Player.., Course.., Player_Name, 
+         Tournament_Name, Course, Round, Hole, Hole_Par, Hole_Score, Yardage, Shot, Shot.Type.S.P.D., Nbr_of_strokes, Shot_Location_Start, Shot_Location_End, Laser_Location_Start, Laser_Location_End, Distance, Distance_to_Pin, Distance_From_Center, Distance_From_Edge, In_Hole, Around_Green, X1st.Putt.Flag, Hole_Distance_After_Shot, Lie,
+         Elevation, Slope, X.Coordinate, Y.Coordinate, Z.Coordinate, Time)
+
+#Adding in Total Score for the Tournament
+TotalPGA = PGA%>% 
+  group_by(Player_Name,Round)%>% #Group strokes/shots by player name and round
+  summarize(shots = sum(Nbr_of_strokes), #total up the number of shots in each round by player
+  groups = "keep")%>% 
+  ungroup()%>% 
+  mutate(Round = paste0("Round_",Round))%>% #create vars for each round based on the round number
+  pivot_wider(names_from = Round,
+  values_from = shots)%>% #Pivot around those rounds and fill them with sum of shots by each round
+  as.data.frame()%>% 
+  mutate(Total_Score = Round_1 + Round_2 + Round_3 + Round_4)%>% #Create a final "Total Scores" column to add up all of the strokes/shots for each round to get a Tournament Total
+  arrange(Total_Score)%>% 
+  head(40) #Check out the first 20 and compare with historical records to verify accuracy
+```
+## Creating a "Par Made" Binary Outcome Column
+```{r}
+#Creating one of my first outcome variables called "Par_Made_Hole
+#For each unique player on each unique hole on each unique round, if 
+#the hole_score for that player is less than or equal to the par for
+#that hole, then give them a 1 for yes, if not 0 for no
+PGA = PGA%>%
+  group_by(Player_Name, Hole, Round)%>%
+  mutate(Par_Made_Hole = if_else(Hole_Score <= Hole_Par, 1, 0))%>%
+  ungroup()
+#Saving Dataset for Later 
+write.csv(PGA, "c:/Sports Analytics/PGA.csv")
+
+PGA = PGA%>%
+  rename("First_Putt_Flag" = X1st.Putt.Flag)
+```
+## Initial Mapping of Shots
+```{r}
+#Mapping points based on their Coordinates
+#First plotting the points as they originally were to see if it matters with the string replacement 
+courseshots = ggplot(PGA,mapping = aes(x = X.Coordinate,
+  y = Y.Coordinate)) +
+  geom_point()+
+  theme(panel.grid.major = element_blank(), 
+  panel.grid.minor = element_blank(),
+  panel.background = element_blank(), 
+  axis.line = element_line(colour = "black"))
+
+#The data in each coordinate variable contains commas so I probably need to remove them 
+PGA = PGA%>% 
+  mutate(x = str_replace_all(string = X.Coordinate,
+                             pattern = ",",
+                             replacement = "")) %>%
+  mutate(y = str_replace_all(string = Y.Coordinate,
+                             pattern = ",",
+                             replacement = "")) %>% 
+  mutate(z = str_replace_all(string = Z.Coordinate,
+                             pattern = ",",
+                             replacement = "")) %>% 
+  mutate(x = as.numeric(x),
+         y = as.numeric(y),
+         z = as.numeric(z))
+
+courseshots
+#The 2nd graph is a little more clear but way zoomed out  
+courseshots2 = ggplot(PGA, mapping = aes(x = x, y = y))+
+  geom_point()+
+  theme(panel.grid.major = element_blank(), 
+  panel.grid.minor = element_blank(),
+  panel.background = element_blank(), 
+  axis.line = element_line(colour = "black"))
+
+courseshots2
+```
+#Taking care of all the accumulated points clustered at the very bottom of the graph
+#Another idea I was thinking about was just imputing them (talked about this in the proposal)
+```{r}
+#Filter out the x coordinates that are NA's
+PGA = PGA%>% 
+  mutate(X = str_replace_all(string = X.Coordinate,
+                             pattern = ",",
+                             replacement = ""))%>%
+  mutate(Y = str_replace_all(string = Y.Coordinate,
+                             pattern = ",",
+                             replacement = ""))%>% 
+  mutate(Z = str_replace_all(string = Z.Coordinate,
+                             pattern = ",",
+                             replacement = ""))%>% 
+  mutate(X = as.numeric(X),
+         Y = as.numeric(Y),
+         Z = as.numeric(Z))%>%
+  #If any of these shotlink coordinates == 0 make them NA's, if not keep them as is
+  #Note this might mess with final shots because the X coordinate of final shots is 0
+  mutate(X = ifelse(X == 0,NA,X),
+         Y = ifelse(Y == 0,NA,Y),
+         Z = ifelse(Z == 0,NA,Z))
+#Get rid of duplicate Coordinate columns   
+PGA = PGA%>%  
+  select(-X.Coordinate, -Y.Coordinate, -Z.Coordinate, -x, -y, -z)
+
+PGA = PGA%>%
+  group_by(Player_Name, Round, Hole)%>%
+  mutate(
+    X = na.approx(X, rule = 2),  # Interpolate missing X values
+    Y = na.approx(Y, rule = 2),  # Interpolate missing Y values
+    Z = na.approx(Z, rule = 2)   # Interpolate missing Z values
+  )%>%
+  ungroup()
+#Filter out all N/A values for X(Be sure to review this later)
+PGA = PGA%>% 
+  filter(!is.na(X))%>% 
+  mutate(Hole = factor(Hole, ordered = TRUE))
+#Changing Hole to a factor since each hole is different and they aren't technically pure numerical numbers  
+
+  
+course_shots_ordered = ggplot(PGA, mapping = aes(x = X, y = Y, color = factor(Hole))) +
+  geom_point() +
+  theme(
+    axis.text = element_blank(),
+    axis.ticks = element_blank(),
+    axis.title = element_blank(),
+    panel.background = element_blank()
+  )
+
+course_shots_ordered
+
+str(PGA)
+##Creating a Variable to determine how many Shots are left for each unique player on each unique hole over each unique round. 
+PGA = PGA%>%
+  group_by(Player_Name, Hole, Round)%>%
+  mutate(Shots_Left_Hole = max(Shot)-Shot)%>%
+  ungroup()
+##Mutating Lie NA values to Be Unknowns 
+PGA = PGA%>%
+  mutate(Lie = str_replace(as.character(Lie), pattern = "N/A", replacement = "Unknown"))
+##Creating modified data frame (We don't need course/tournament numbers and some other variables that might impact with our shot location analysis)
+PGA = PGA%>%
+  select(Tour_type, Tournament_Name, Player_Name, Course, Round, Hole, Hole_Par,            Hole_Score, Yardage, Shot, Shot.Type.S.P.D., Nbr_of_strokes, Shot_Location_Start, Shot_Location_End, Laser_Location_Start, Laser_Location_End, Distance, Distance_to_Pin, Distance_From_Center, Distance_From_Edge, In_Hole, Around_Green, First_Putt_Flag, Hole_Distance_After_Shot, Lie, Elevation, Slope, Time, X, Y, Z, Par_Made_Hole, Shots_Left_Hole)
+```
+
+## Working to Create a Shot Map based off of "Shots Remaining"
+```{r}
+PGA_Initial_model = lm(Shots_Left_Hole~X*Y*Z,data = PGA)
+
+summary(PGA_Initial_model)
+
+```
+## Modeling Next Attempt
+```{r}
+library(mgcv)
+#Using a generalized Additive Model
+#S smooths out the data and "TP" accounts for multidimensions (X,Y,Z coordinate planes)
+PGA_GAM = gam(Shots_Left_Hole ~ s(X, Y, Z, bs = "tp"), data = PGA)
+
+summary(PGA_GAM)
+```
+## Create a grid to store these values in
+```{r}
+#Calculating level of detail within my golf course shot locations lengths to build a grid
+X_range = range(PGA$X)
+Y_range = range(PGA$Y)
+Z_range = range(PGA$Z)
+#Maxing out granularity of heat graph because there is a wide spread dispersion in X and Y values
+X_length = 200  
+Y_length = 200
+Z_length = 30 
+#Create a grid made up of the minimum and maximum values of each coordinate
+PGA_grid = expand.grid(X = seq(X_range[1], X_range[2], length.out = X_length),
+                    Y = seq(Y_range[1], Y_range[2], length.out = Y_length),
+                    Z = seq(Z_range[1], Z_range[2], length.out = Z_length))
+#Taking the grid and filling it with predicted shot remaining values based on the distances
+#using our Generalized model 
+PGA_grid$Shots_Left_Hole = predict(PGA_GAM, newdata = PGA_grid)
+```
+## Making the Heatmap
+```{r}
+##Turning the grid into data we will fill the heat map with, grouping it by shot coordinates
+#and removing any N/A values (shouldn't be any to begin with)
+PGA_heatmap_data = PGA_grid%>%
+  group_by(X,Y,Z)%>%
+  summarise(Shots_Left_Hole = mean(Shots_Left_Hole, na.rm = TRUE))
+##First heatmap (This is on an aggregated course level so now I need to break this down hole by hole)
+PGA_initial_heatmap = 
+  ggplot(PGA_heatmap_data, aes(x = X, y = Y, fill = Shots_Left_Hole)) +
+  geom_tile() +
+  dark_theme_minimal()+
+  theme(panel.grid.major = element_blank(), 
+  panel.grid.minor = element_blank(), 
+  panel.border = element_blank(),
+  panel.background = element_blank())+
+  labs(title = "Heatmap of Shots Remaining",
+  x = "X Coord",
+  y = "Y Coord",
+  fill = "Shots Rem")
+
+PGA_initial_heatmap
+```
+## Breaking the Heat Map into Hole Specific ones
+```{r}
+getwd()
+#We know each hole is unique so this is breaking them out as ordered factors
+unique_Holes = levels(PGA$Hole)
+
+#We also need to create a list to store all of the coordinate data for each unique hole
+PGA_Holes_heatmap = list()
+
+for (hole in unique_Holes){
+  PGA_Holes_data = PGA %>% filter(Hole == hole)
+  range_X_hole = range(PGA_Holes_data$X, na.rm = TRUE)
+  range_Y_hole = range(PGA_Holes_data$Y, na.rm = TRUE)
+  range_Z_hole = range(PGA_Holes_data$Z, na.rm = TRUE)
+  
+  PGA_Holes_grid = expand.grid(
+    X = seq(range_X_hole[1], range_X_hole[2], length.out = X_length),
+    Y = seq(range_Y_hole[1], range_Y_hole[2], length.out = Y_length),
+    Z = seq(range_Z_hole[1], range_Z_hole[2], length.out = Z_length))
+  
+  PGA_Holes_grid$Shots_Left_Hole = predict(PGA_GAM, newdata = PGA_Holes_grid)
+  
+  Heatmap_Hole_N = 
+    ggplot(PGA_Holes_grid, aes(x = X, y = Y, fill = Shots_Left_Hole))+
+    geom_tile()+
+    dark_theme_minimal()+
+    theme(panel.grid.major = element_blank(), 
+      panel.grid.minor = element_blank(), 
+      panel.border = element_blank(),
+      panel.background = element_blank())+
+    labs( title = paste("Heatmap of Remaining Shots for Hole N", hole),
+          x = "X Coord",
+          y = "Y Coord",
+          fill = "Remaining Shots")
+  
+  PGA_Holes_heatmap[[as.character(hole)]] = Heatmap_Hole_N
+  ggsave(Heatmap_Hole_N, file = paste("graph_", hole, ".jpeg", sep = ""), width = 10, height = 10, dpi =600)
+      
+}
+```
+##Checking Shots Remaining Values
+```{r}
+summary(PGA_Holes_grid$Shots_Left_Hole)
+
+unique(PGA$Shots_Left_Hole)
+
+```
+
+
+## Heatmap for Hole 1
+```{r}
+PGA_Holes_heatmap[[1]]
+```
+## Heatmap for Hole 2
+```{r}
+PGA_Holes_heatmap[[2]]
+```
+## Heatmap for Hole 3
+```{r}
+PGA_Holes_heatmap[[3]]
+```
+## Heatmap for Hole 4
+```{r}
+PGA_Holes_heatmap[[4]]
+```
+## Heatmap for Hole 5
+```{r}
+PGA_Holes_heatmap[[5]]
+```
+## Heatmap for Hole 6
+```{r}
+PGA_Holes_heatmap[[6]]
+```
+## Heatmap for Hole 7
+```{r}
+PGA_Holes_heatmap[[7]]
+```
+## Heatmap for Hole 8
+```{r}
+PGA_Holes_heatmap[[8]]
+```
+## Heatmap for Hole 9
+```{r}
+PGA_Holes_heatmap[[9]]
+```
+## Heatmap for Hole 10
+```{r}
+PGA_Holes_heatmap[[10]]
+```
+## Heatmap for Hole 11
+```{r}
+PGA_Holes_heatmap[[11]]
+```
+## Heatmap for Hole 12
+```{r}
+PGA_Holes_heatmap[[12]]
+```
+## Heatmap for Hole 13
+```{r}
+PGA_Holes_heatmap[[13]]
+```
+## Heatmap for Hole 14
+```{r}
+PGA_Holes_heatmap[[14]]
+```
+## Heatmap for Hole 15
+```{r}
+PGA_Holes_heatmap[[15]]
+```
+## Heatmap for Hole 16
+```{r}
+PGA_Holes_heatmap[[16]]
+```
+## Heatmap for Hole 17
+```{r}
+PGA_Holes_heatmap[[17]]
+```
+## Heatmap for Hole 18
+```{r}
+PGA_Holes_heatmap[[18]]
+```
+## Creating a Strokes Gained/Lost model
+```{r}
+##The Formula We'll be trying to use looks like this:
+#Strokes Gained = (Expected Shots/Strokes before)-(Expected shots/strokes after)-1
+
+#For each unique Player+Round+Hole+Shot, create 3 new calculated variables:
+#Use our predictive model to determine the expected number of strokes prior to the shot each player is actually on (EXP B)
+#Then look at the expected shots remaining after whatever shot each player is on (EXP A)
+#Take the two and create strokes gained from our original formula (the -1 accounts for the additional current stroke taken since we're looking at it twice)
+PGAExp = PGA%>%
+  group_by(Player_Name, Hole, Round)%>%
+  mutate(
+    Exp_Strokes_B = predict(PGA_GAM, newdata = cur_data()),
+    Exp_Strokes_A = ifelse(row_number() == n(), 0, lead(Exp_Strokes_B, default = NA)),
+    Strokes_Gained = Exp_Strokes_B - Exp_Strokes_A - 1
+  ) %>%
+  ungroup()
+```
+
+## Shots Gained DataFrame
+```{r}
+unique(PGA$Shot_Location_Start)
+
+##Trying to both sum up total strokes gained by player as well as where they're gaining strokes on the golf course. I wanted to use the S.P.D column because it breaks entries down into whether they're approach shots, tee, shots, putting etc but all the values in that column and "S" so I'm trying to use the shot location start to do the same thing (Note: there are two unique values in shot location start Other and Unknown I might have to impute to work around this.) 
+Strokes_Gained_df = PGAExp%>%
+  group_by(Player_Name, Round)%>%
+  summarize(
+    Total_Strokes_Gained = sum(Strokes_Gained, na.rm = TRUE),
+    SG_Drive = sum(Strokes_Gained[Shot_Location_Start == "Tee Box"], na.rm = TRUE),
+    SG_Approach = sum(Strokes_Gained[Shot_Location_Start %in% c("Primary Rough", "Fairway", "Fairway Bunker", "Native Area", "Water", "Intermediate Rough")], na.rm = TRUE),
+    SG_Around_Green = sum(Strokes_Gained[Shot_Location_Start %in% c("Green Side Bunker", "Fringe")], na.rm = TRUE),
+    SG_Putt = sum(Strokes_Gained[Shot_Location_Start == "Green"], na.rm = TRUE)
+  )
+
+write.csv(Strokes_Gained_df, "C:/Sports Analytics/Strokes_Gained_df.csv", row.names = FALSE)
+
+write.csv(PGAExp, "C:/Sports Analytics/PGAExp.csv", row.names = FALSE)
+```
+
+
+
+
+
